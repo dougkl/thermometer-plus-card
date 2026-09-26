@@ -1,0 +1,7 @@
+# The card is served verbatim to browsers and compared byte-for-byte against
+# the deployed copy, so keep it LF regardless of the checkout platform.
+* text=auto eol=lf
+*.js text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
