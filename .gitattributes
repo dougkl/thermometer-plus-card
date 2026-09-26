@@ -5,3 +5,9 @@
 *.py text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+
+# Never run line-ending conversion on binaries.
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary

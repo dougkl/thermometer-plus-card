@@ -13,25 +13,15 @@ It also colours the thermometer — column *and* bulb — by comfort band rather
 than a single gradient: snow white below freezing, blue when cold, green in
 the ideal range, red when hot. See [Colours](#colours).
 
-It is a standalone fork of `temperature-thermometer-card` v2.2.0 and
-deliberately installs to `www/` rather than `www/community/`, so a HACS update
-of the original cannot overwrite it.
+It is a standalone fork of `temperature-thermometer-card` v2.2.0 published
+under its own card name (`custom:thermometer-plus-card`), so installing it
+never collides with — or gets overwritten by — the original.
 
-```
-┌──────────────────────────────┐
-│ Outdoor                      │
-│                              │
-│    ▓         Temp    Humidity│
-│    ▓        Max  Min  Max Min│
-│    ▓   6 h  74.0 70.0  57  40│
-│    ▓  12 h  80.0 62.0  70  30│
-│    █  24 h  80.0 55.0  90  20│
-│   ███                        │
-│  73.9 °F                     │
-│  23.3 °C   ← smaller font    │
-│  💧 42 %                     │
-└──────────────────────────────┘
-```
+![Thermometer Plus Card showing 71.8 °F with a green column and bulb, a 22.1 °C
+secondary readout, 44 % humidity, and a min/max table over 6 h, 12 h and 24 h
+windows](docs/screenshot.jpg)
+
+*71.8 °F falls inside the 65–76 comfort band, so the column and bulb are green.*
 
 ## Install
 
