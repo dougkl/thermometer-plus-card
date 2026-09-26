@@ -1,0 +1,25 @@
+# Never commit secrets or local environment files
+config.env
+*.env
+.env
+credentials.md
+secrets.yaml
+
+# Node
+node_modules/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Backups
+backups/
+*.bak
+*.bak-*
