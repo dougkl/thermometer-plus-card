@@ -9,6 +9,10 @@ sensor, with three things the card it was forked from could not do:
 3. **A secondary unit readout** — e.g. °C rendered in a smaller font
    underneath the °F value.
 
+It also colours the thermometer — column *and* bulb — by comfort band rather
+than a single gradient: snow white below freezing, blue when cold, green in
+the ideal range, red when hot. See [Colours](#colours).
+
 It is a standalone fork of `temperature-thermometer-card` v2.2.0 and
 deliberately installs to `www/` rather than `www/community/`, so a HACS update
 of the original cannot overwrite it.
@@ -31,6 +35,38 @@ of the original cannot overwrite it.
 
 ## Install
 
+### Option A — HACS (recommended)
+
+This card is not in the default HACS store, so add it as a custom repository:
+
+1. In Home Assistant go to **HACS**.
+2. Open the **⋮** menu (top right) → **Custom repositories**.
+3. Paste the repository URL and pick the type:
+
+   | Field | Value |
+   |-------|-------|
+   | Repository | `https://github.com/dougkl/thermometer-plus-card` |
+   | Type | **Dashboard** (called *Lovelace* on older HACS versions) |
+
+4. Click **Add**, then close the dialog.
+5. Search HACS for **Thermometer Plus Card**, open it and click **Download**.
+6. **Reload the browser bypassing the cache** (`Ctrl`+`F5`, or
+   `Cmd`+`Shift`+`R` on macOS). HACS registers the dashboard resource for you,
+   but the browser will happily keep serving the previously cached module.
+7. Add it to a dashboard: **Edit dashboard → + Add card**, search for
+   **Thermometer Plus**, and pick your temperature sensor. The visual editor
+   exposes every option listed below.
+
+To update later, HACS offers the new release and handles the resource version
+for you — just bypass the cache again afterwards.
+
+> HACS installs to `config/www/community/thermometer-plus-card/`. If you had
+> previously installed manually into `config/www/`, delete that old file and
+> its resource entry, otherwise two copies fight over the same `custom:` card
+> name.
+
+### Option B — manual
+
 1. Copy `thermometer-plus-card.js` into your Home Assistant `config/www/`
    directory:
 
@@ -41,7 +77,7 @@ of the original cannot overwrite it.
 2. Register it as a Lovelace resource — **Settings → Dashboards → ⋮ →
    Resources → Add resource**:
 
-   - URL: `/local/thermometer-plus-card.js?v=1.0.0`
+   - URL: `/local/thermometer-plus-card.js?v=1.1.0`
    - Type: **JavaScript module**
 
    Or let the bundled script do both steps and rewrite the card in your
@@ -59,7 +95,9 @@ of the original cannot overwrite it.
    before running it. It backs up `.storage` first, and edits the dashboard
    through the websocket API rather than writing `.storage` directly — Home
    Assistant keeps the dashboard in memory and would overwrite a direct file
-   edit on its next save.
+   edit on its next save. Upgrading a card that already uses this type keeps
+   whatever you changed in the dashboard UI and only forces the keys that are
+   new in that version.
 
    `deploy_thermometer_card.py` imports `ha_ws.py`, a stdlib-only websocket
    client included here — keep the two files side by side. Neither needs pip,
@@ -85,7 +123,10 @@ windows: [6, 12, 24]
 show_table: true
 stats_interval: 60
 value_position: below
-color_mode: spectrum
+color_mode: bands
+comfort_min: 65
+comfort_max: 76
+freeze_below: 35
 scale_min: 0
 scale_max: 110
 optimum: 72
@@ -115,13 +156,48 @@ grid_options:
 | `stats_interval` | number | `300` | Seconds between history refreshes. |
 | `value_position` | string | `below` | `below` or `left` of the thermometer. |
 | `scale_min` / `scale_max` | number | unit-aware | Thermometer range. |
-| `optimum` | number | unit-aware | Where the colour spectrum turns from cool to warm. |
-| `color_mode` | string | `spectrum` | `spectrum` or `static` (uses `theme_colors.fill`). |
+| `optimum` | number | unit-aware | Where the colour spectrum turns from cool to warm. Only used by `color_mode: spectrum`. |
+| `color_mode` | string | `bands` | `bands`, `spectrum`, or `static` (uses `theme_colors.fill`). |
+| `comfort_min` / `comfort_max` | number | unit-aware | The green "ideal" band. `bands` mode only. |
+| `freeze_below` | number | unit-aware | Below this the thermometer turns snow white. `bands` mode only. |
 | `precision` | number | `1` | Decimals for temperature. |
 | `humidity_precision` | number | `0` | Decimals for humidity. |
 | `font_sizes` | object | see above | Per-element font sizes in `rem`. |
 | `theme_colors` | object | `{}` | `{ tube, fill }` colour overrides. |
 | `debug_banner` | bool | `false` | Show version/entity in the corner. |
+
+### Colours
+
+With the default `color_mode: bands`, the liquid column **and the bulb** are
+coloured by how the temperature compares to your comfort band, so a glance at
+the card tells you hot / ideal / cold / freezing:
+
+| Range (°F defaults) | Colour |
+|---------------------|--------|
+| above `comfort_max` (76) | green → lime → gold → orange → **red**, hotter is redder |
+| `comfort_min` … `comfort_max` (65–76) | flat **green** — ideal |
+| `freeze_below` … `comfort_min` (35–65) | green → teal → **blue**, colder is bluer |
+| below `freeze_below` (35) | pale ice → **snow white**, colder is whiter |
+
+The ramps meet exactly at each threshold, so there is no visible jump as the
+temperature crosses one. The bulb always matches the column — upstream painted
+it red permanently, which read as "hot" even at freezing.
+
+`comfort_min`, `comfort_max` and `freeze_below` are in the card's display
+`unit`, and default per unit:
+
+| Unit | `comfort_min` | `comfort_max` | `freeze_below` |
+|------|---------------|---------------|----------------|
+| °F | 65 | 76 | 35 |
+| °C | 18.3 | 24.4 | 1.7 |
+| K | 291.5 | 297.6 | 274.8 |
+
+An unavailable or unknown temperature is drawn grey rather than in a band
+colour, so a stale sensor is never mistaken for a real reading.
+
+The other two modes are still available: `spectrum` is the original continuous
+gradient pivoting around `optimum`, and `static` paints everything
+`theme_colors.fill`.
 
 ### Unit-aware scale defaults
 
@@ -157,10 +233,13 @@ npm install
 npm test
 ```
 
-37 assertions cover the readouts and secondary-unit conversion, window
-filtering and labels, the scale fix, graceful degradation (missing humidity
-entity, `unavailable` states, empty history), legacy config compatibility, and
-that two instances on one dashboard do not collide in the SVG id namespace.
+58 assertions cover the readouts and secondary-unit conversion, window
+filtering and labels, the scale fix, the colour bands (flat green across the
+comfort band, monotonically redder above it, blue then snow-white below it,
+ramps meeting at the thresholds, configurable limits, and grey when
+unavailable), graceful degradation (missing humidity entity, `unavailable`
+states, empty history), legacy config compatibility, and that two instances on
+one dashboard do not collide in the SVG id namespace.
 
 ## License
 

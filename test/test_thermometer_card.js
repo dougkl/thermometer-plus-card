@@ -264,5 +264,94 @@ console.log("\n=== 7. multiple instances do not collide ===");
   checkTrue(`clip ids unique (${idA} != ${idB})`, idA !== idB, "ids collide");
 }
 
+console.log("\n=== 8. banded temperature colours ===");
+{
+  const parseRgb = (s) => {
+    const m = String(s).match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    return m ? [+m[1], +m[2], +m[3]] : null;
+  };
+  const colorAt = (t, extra) => {
+    const el = build(Object.assign({}, BASE, extra || {}), makeHass(String(t)));
+    return {
+      fill: el._fillEl.getAttribute("fill"),
+      bulb: el._bulbEl.getAttribute("fill"),
+    };
+  };
+  const GREEN = "rgb(67,160,71)";
+
+  // Comfort band 65..76 F is flat green at both edges and in the middle.
+  check("comfort low edge (65F) green", colorAt(65).fill, GREEN);
+  check("comfort middle (70F) green", colorAt(70).fill, GREEN);
+  check("comfort high edge (76F) green", colorAt(76).fill, GREEN);
+
+  // The bulb must track the column instead of being permanently red.
+  check("bulb matches column in comfort", colorAt(70).bulb, GREEN);
+  checkTrue("bulb is no longer hardcoded red",
+    colorAt(70).bulb !== "var(--error-color)", colorAt(70).bulb);
+
+  // Hot: above comfort it must get redder monotonically.
+  const hot90 = parseRgb(colorAt(90).fill);
+  checkTrue(`hot (90F) is warm, not green (${colorAt(90).fill})`,
+    hot90[0] > hot90[2] && hot90[0] > 200, colorAt(90).fill);
+  check("scale max (110F) is red", colorAt(110).fill, "rgb(211,47,47)");
+  // "Redder" means greenness (G-R) falls; the raw red channel dips slightly
+  // from gold to red, so comparing R alone would be misleading.
+  const greenness = [76, 80, 90, 100, 110].map((t) => {
+    const c = parseRgb(colorAt(t).fill);
+    return c[1] - c[0];
+  });
+  checkTrue(`greenness falls as it heats (${greenness.join(" > ")})`,
+    greenness.every((g, i) => i === 0 || g < greenness[i - 1]),
+    greenness.join(","));
+  const top = parseRgb(colorAt(110).fill);
+  checkTrue("hot end is red-dominant", top[0] > top[1] + 100 && top[0] > top[2] + 100,
+    colorAt(110).fill);
+
+  // Cold: between freeze (35F) and comfort_min it must be blue-dominant.
+  const cold50 = parseRgb(colorAt(50).fill);
+  checkTrue(`cold (50F) is blue-dominant (${colorAt(50).fill})`,
+    cold50[2] > cold50[0], colorAt(50).fill);
+
+  // Snow: below 35F it must be near-white and brighter the colder it gets.
+  const snow30 = parseRgb(colorAt(30).fill);
+  const snow0 = parseRgb(colorAt(0).fill);
+  checkTrue(`snow (30F) is pale (${colorAt(30).fill})`,
+    snow30[0] > 180 && snow30[1] > 210 && snow30[2] > 240, colorAt(30).fill);
+  check("coldest (0F) is snow white", colorAt(0).fill, "rgb(255,255,255)");
+  checkTrue("colder means whiter", snow0[0] > snow30[0],
+    `${colorAt(30).fill} -> ${colorAt(0).fill}`);
+
+  // Freezing point is the boundary between the snow and cold ramps, so the
+  // two ramps must meet there rather than jumping.
+  check("freeze point (35F) joins both ramps", colorAt(35).fill,
+    "rgb(186,230,253)");
+
+  // Thresholds are configurable.
+  check("custom comfort band applies",
+    colorAt(60, { comfort_min: 55, comfort_max: 62 }).fill, GREEN);
+  const customFreeze = parseRgb(colorAt(45, { freeze_below: 50 }).fill);
+  checkTrue(`custom freeze threshold applies (45F snowy when freeze=50)`,
+    customFreeze[0] > 180 && customFreeze[2] > 240, customFreeze.join(","));
+  const defaultAt45 = parseRgb(colorAt(45).fill);
+  checkTrue("same 45F is blue, not snow, with the default freeze of 35",
+    defaultAt45[2] > defaultAt45[0] && defaultAt45[0] < 180,
+    defaultAt45.join(","));
+
+  // Other colour modes still work.
+  check("static mode honours theme_colors.fill",
+    colorAt(70, { color_mode: "static", theme_colors: { fill: "#abcdef" } }).fill,
+    "#abcdef");
+  checkTrue("spectrum mode still available",
+    colorAt(70, { color_mode: "spectrum" }).fill !== GREEN,
+    "spectrum returned the band green");
+
+  // Unknown temperature must not be shown as a confident green/red.
+  const un = build(BASE, makeHass("unavailable"));
+  check("unavailable temp is greyed",
+    un._fillEl.getAttribute("fill"), "var(--disabled-text-color,#9e9e9e)");
+  check("unavailable bulb is greyed",
+    un._bulbEl.getAttribute("fill"), "var(--disabled-text-color,#9e9e9e)");
+}
+
 console.log(`\n==== ${pass}/${pass + fail} checks passed ====`);
 process.exit(fail === 0 ? 0 : 1);

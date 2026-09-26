@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ha_ws import HAClient  # noqa: E402
 
-CARD_VERSION = "1.0.0"
+CARD_VERSION = "1.1.0"
 RESOURCE_URL = "/local/thermometer-plus-card.js?v=" + CARD_VERSION
 RESOURCE_STEM = "/local/thermometer-plus-card.js"
 
@@ -46,7 +46,12 @@ NEW_CARD = {
     "show_table": True,
     "stats_interval": 60,
     "value_position": "below",
-    "color_mode": "spectrum",
+    # Banded colouring: snow-white below freezing, blue while cold, flat green
+    # through the comfort band, then gold/orange/red as it heats up.
+    "color_mode": "bands",
+    "comfort_min": 65,
+    "comfort_max": 76,
+    "freeze_below": 35,
     # Upstream defaulted to -20..40, which pegs a degF reading at full scale.
     "scale_min": 0,
     "scale_max": 110,
@@ -61,6 +66,10 @@ NEW_CARD = {
     },
     "grid_options": {"columns": 9, "rows": "auto"},
 }
+
+# Keys introduced by this version. When upgrading a card that is already ours
+# these are overwritten; everything else the user set in the UI is kept.
+FORCE_KEYS = ("type", "color_mode", "comfort_min", "comfort_max", "freeze_below")
 
 STORAGE = "/config/.storage"
 BACKUP_DIR = "/config/matter-keepalive/backups"
@@ -80,15 +89,27 @@ def backup():
 
 
 def walk_replace(node, hits):
-    """Swap every old thermometer card for the new config, in place."""
+    """Swap every old thermometer card for the new config, in place.
+
+    Migrating from the upstream card starts from NEW_CARD and keeps only the
+    layout. Upgrading a card that is already ours must NOT clobber settings
+    tweaked in the dashboard UI, so the existing config wins and only the keys
+    introduced by this version are forced.
+    """
     if isinstance(node, dict):
-        if node.get("type") == OLD_TYPE or node.get("type") == NEW_TYPE:
+        is_ours = node.get("type") == NEW_TYPE
+        if node.get("type") == OLD_TYPE or is_ours:
             merged = dict(NEW_CARD)
-            # Preserve layout the user may have tweaked.
-            if "grid_options" in node:
-                merged["grid_options"] = node["grid_options"]
-            if "title" in node and node["title"]:
-                merged["title"] = node["title"]
+            if is_ours:
+                merged.update(node)
+                for k in FORCE_KEYS:
+                    merged[k] = NEW_CARD[k]
+            else:
+                # Preserve layout the user may have tweaked.
+                if "grid_options" in node:
+                    merged["grid_options"] = node["grid_options"]
+                if "title" in node and node["title"]:
+                    merged["title"] = node["title"]
             hits.append((dict(node), merged))
             node.clear()
             node.update(merged)

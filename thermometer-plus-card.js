@@ -10,6 +10,11 @@
  *   3. A secondary temperature readout in a different unit (e.g. °C under
  *      °F) rendered in a smaller font.
  *
+ * Plus banded colouring (color_mode "bands", the default): the column and the
+ * bulb go snow-white below freezing, blue while cold, flat green through the
+ * comfort band and gold/orange/red above it. Upstream painted the bulb red
+ * permanently, which reads as "hot" even at freezing.
+ *
  * Lives in /config/www/ rather than /config/www/community/ so that a HACS
  * update of the upstream card cannot overwrite it.
  *
@@ -33,7 +38,7 @@
   "use strict";
 
   var CARD = "thermometer-plus-card";
-  var VERSION = "1.0.0";
+  var VERSION = "1.1.0";
 
   /* ------------------------------------------------------------------ *
    * Helpers
@@ -58,6 +63,42 @@
   function rgb(c) {
     return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
   }
+
+  /**
+   * Interpolate across an array of RGB stops. t is normalised 0..1 across the
+   * whole ramp, so the stops are evenly spaced.
+   */
+  function ramp(stops, t) {
+    t = clamp01(t);
+    var n = stops.length - 1;
+    var x = t * n;
+    var i = Math.min(n - 1, Math.floor(x));
+    return rgb(lerpRgb(stops[i], stops[i + 1], x - i));
+  }
+
+  /* Colour anchors for the banded ("bands") colour mode. */
+  var BAND_GREEN = [67, 160, 71];
+  /* Below freezing: white snow warming into pale ice. */
+  var BAND_SNOW = [
+    [255, 255, 255],
+    [235, 248, 255],
+    [186, 230, 253],
+  ];
+  /* Freezing up to the comfort band: ice -> blue -> teal -> green. */
+  var BAND_COLD = [
+    [186, 230, 253],
+    [41, 147, 239],
+    [26, 188, 156],
+    BAND_GREEN,
+  ];
+  /* Above the comfort band: green -> lime -> gold -> orange -> red. */
+  var BAND_HOT = [
+    BAND_GREEN,
+    [154, 205, 50],
+    [255, 193, 7],
+    [255, 112, 67],
+    [211, 47, 47],
+  ];
 
   /**
    * Normalise a unit string to a single letter: "°F" -> "F", "celsius" -> "C".
@@ -105,6 +146,20 @@
     if (k === "F") return { min: 0, max: 110, optimum: 72 };
     if (k === "K") return { min: 253, max: 313, optimum: 293 };
     return { min: -20, max: 40, optimum: 20 };
+  }
+
+  /**
+   * Comfort-band defaults per unit, used by color_mode "bands":
+   * green inside [comfort_min, comfort_max], warming to red above it, cooling
+   * to blue below it, and turning to snow-white below freeze_below.
+   */
+  function bandDefaults(unit) {
+    var k = unitKey(unit);
+    if (k === "F") return { comfort_min: 65, comfort_max: 76, freeze_below: 35 };
+    if (k === "K") {
+      return { comfort_min: 291.5, comfort_max: 297.6, freeze_below: 274.8 };
+    }
+    return { comfort_min: 18.3, comfort_max: 24.4, freeze_below: 1.7 };
   }
 
   /**
@@ -193,7 +248,10 @@
         scale_min: undefined,
         scale_max: undefined,
         optimum: undefined,
-        color_mode: "spectrum",
+        color_mode: "bands",
+        comfort_min: undefined,
+        comfort_max: undefined,
+        freeze_below: undefined,
         debug_banner: false,
       };
 
@@ -411,6 +469,7 @@
       this._humidityEl = humidity;
       this._humidityTextEl = humText;
       this._fillEl = fill;
+      this._bulbEl = bulb;
       this._tubeEl = tube;
       this._tableEl = table;
       this._grpEl = grp;
@@ -543,14 +602,30 @@
       this._fillEl.setAttribute("y", String(148 - h));
       this._fillEl.setAttribute("height", String(h));
 
+      // The bulb is the liquid reservoir, so it takes the same colour as the
+      // column instead of being permanently red.
       var tc = cfg.theme_colors || {};
-      if (cfg.color_mode === "static" && tc.fill) {
-        this._fillEl.setAttribute("fill", tc.fill);
-      } else {
+      var color;
+      if (isNaN(temp)) {
+        color = "var(--disabled-text-color,#9e9e9e)";
+      } else if (cfg.color_mode === "static" && tc.fill) {
+        color = tc.fill;
+      } else if (cfg.color_mode === "spectrum") {
         var opt = Number(cfg.optimum);
         if (isNaN(opt)) opt = sd.optimum;
-        this._fillEl.setAttribute("fill", this._spectrum(shown, lo, hi, opt));
+        color = this._spectrum(shown, lo, hi, opt);
+      } else {
+        var bd = bandDefaults(unit);
+        var cMin = Number(cfg.comfort_min);
+        if (isNaN(cMin)) cMin = bd.comfort_min;
+        var cMax = Number(cfg.comfort_max);
+        if (isNaN(cMax)) cMax = bd.comfort_max;
+        var frz = Number(cfg.freeze_below);
+        if (isNaN(frz)) frz = bd.freeze_below;
+        color = this._bandColor(shown, lo, hi, cMin, cMax, frz);
       }
+      this._fillEl.setAttribute("fill", color);
+      this._bulbEl.setAttribute("fill", color);
 
       // --- history / statistics ---
       var every = 1000 * (cfg.stats_interval || 300);
@@ -572,6 +647,30 @@
       } else if (this._series) {
         this._renderTable(unitTxt, humUnit);
       }
+    }
+
+    /**
+     * Banded colouring: flat green inside the comfort band, warming through
+     * lime/gold/orange to red above it, cooling through teal/blue to ice
+     * below it, and turning to snow white below the freezing threshold.
+     */
+    _bandColor(value, lo, hi, comfortMin, comfortMax, freezeBelow) {
+      if (comfortMax < comfortMin) {
+        var swap = comfortMin;
+        comfortMin = comfortMax;
+        comfortMax = swap;
+      }
+      if (value >= comfortMin && value <= comfortMax) return rgb(BAND_GREEN);
+      if (value > comfortMax) {
+        return ramp(BAND_HOT, (value - comfortMax) / Math.max(1e-6, hi - comfortMax));
+      }
+      if (value >= freezeBelow) {
+        return ramp(
+          BAND_COLD,
+          (value - freezeBelow) / Math.max(1e-6, comfortMin - freezeBelow)
+        );
+      }
+      return ramp(BAND_SNOW, (value - lo) / Math.max(1e-6, freezeBelow - lo));
     }
 
     _spectrum(value, lo, hi, optimum) {
@@ -840,11 +939,24 @@
           selector: {
             select: {
               options: [
+                { value: "bands", label: "Bands (snow / cold / comfort / hot)" },
                 { value: "spectrum", label: "Spectrum" },
                 { value: "static", label: "Static (theme_colors.fill)" },
               ],
             },
           },
+        },
+        {
+          name: "comfort_min",
+          selector: { number: { min: -100, max: 400, mode: "box" } },
+        },
+        {
+          name: "comfort_max",
+          selector: { number: { min: -100, max: 400, mode: "box" } },
+        },
+        {
+          name: "freeze_below",
+          selector: { number: { min: -100, max: 400, mode: "box" } },
         },
         { name: "theme_colors", selector: { object: {} } },
         { name: "debug_banner", selector: { boolean: {} } },
