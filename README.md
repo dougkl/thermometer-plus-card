@@ -67,7 +67,7 @@ for you — just bypass the cache again afterwards.
 2. Register it as a Lovelace resource — **Settings → Dashboards → ⋮ →
    Resources → Add resource**:
 
-   - URL: `/local/thermometer-plus-card.js?v=1.1.0`
+   - URL: `/local/thermometer-plus-card.js?v=1.2.0`
    - Type: **JavaScript module**
 
    Or let the bundled script do both steps and rewrite the card in your
@@ -112,6 +112,8 @@ secondary_unit: C
 windows: [6, 12, 24]
 show_table: true
 stats_interval: 60
+show_age: true
+stale_after: 3600
 value_position: below
 color_mode: bands
 comfort_min: 65
@@ -150,6 +152,8 @@ grid_options:
 | `color_mode` | string | `bands` | `bands`, `spectrum`, or `static` (uses `theme_colors.fill`). |
 | `comfort_min` / `comfort_max` | number | unit-aware | The green "ideal" band. `bands` mode only. |
 | `freeze_below` | number | unit-aware | Below this the thermometer turns snow white. `bands` mode only. |
+| `show_age` | bool | `true` | Show how long ago the sensor last reported. |
+| `stale_after` | number | `3600` | Seconds after which the age line turns amber. `0` disables the warning. |
 | `precision` | number | `1` | Decimals for temperature. |
 | `humidity_precision` | number | `0` | Decimals for humidity. |
 | `font_sizes` | object | see above | Per-element font sizes in `rem`. |
@@ -164,14 +168,14 @@ the card tells you hot / ideal / cold / freezing:
 
 | Range (°F defaults) | Colour |
 |---------------------|--------|
-| above `comfort_max` (76) | green → lime → gold → orange → **red**, hotter is redder |
+| above `comfort_max` (76) | **amber → orange → red**, hotter is redder |
 | `comfort_min` … `comfort_max` (65–76) | flat **green** — ideal |
-| `freeze_below` … `comfort_min` (35–65) | green → teal → **blue**, colder is bluer |
+| `freeze_below` … `comfort_min` (35–65) | **light blue → deep blue**, colder is deeper |
 | below `freeze_below` (35) | pale ice → **snow white**, colder is whiter |
 
-The ramps meet exactly at each threshold, so there is no visible jump as the
-temperature crosses one. The bulb always matches the column — upstream painted
-it red permanently, which read as "hot" even at freezing.
+Each band starts at its own distinct colour, so crossing a threshold is
+obvious rather than a gradual blend. The bulb always matches the column —
+upstream painted it red permanently, which read as "hot" even at freezing.
 
 `comfort_min`, `comfort_max` and `freeze_below` are in the card's display
 `unit`, and default per unit:
@@ -188,6 +192,27 @@ colour, so a stale sensor is never mistaken for a real reading.
 The other two modes are still available: `spectrum` is the original continuous
 gradient pivoting around `optimum`, and `static` paints everything
 `theme_colors.fill`.
+
+> **Why the bands do not blend.** The first version eased each ramp into green
+> at the comfort edges. It looked smooth, but it meant a 30-degree-wide cold
+> zone rendered as green-teal for most of its range — a real 24 h span of
+> 61–72 °F produced no visible colour change at all. Distinct band starts fix
+> that.
+
+### Freshness
+
+Under the readout the card shows how long ago the sensor last reported
+(`just now`, `20 min ago`, `2 h 10 min ago`, `3 d ago`). Many outdoor sensors
+only report every 15–30 minutes, which makes a perfectly healthy card look
+frozen — and makes a sensor that has actually died look identical to one that
+is merely quiet.
+
+Past `stale_after` seconds (default 3600) the line turns amber, so a dead
+sensor is obvious. Set `stale_after: 0` to never warn, or `show_age: false` to
+hide the line entirely.
+
+The card also re-renders on a 30 second timer, because Home Assistant only
+pushes an update when an entity actually changes state.
 
 ### Unit-aware scale defaults
 
@@ -223,13 +248,19 @@ npm install
 npm test
 ```
 
-58 assertions cover the readouts and secondary-unit conversion, window
+90 assertions cover the readouts and secondary-unit conversion, window
 filtering and labels, the scale fix, the colour bands (flat green across the
 comfort band, monotonically redder above it, blue then snow-white below it,
-ramps meeting at the thresholds, configurable limits, and grey when
-unavailable), graceful degradation (missing humidity entity, `unavailable`
-states, empty history), legacy config compatibility, and that two instances on
-one dashboard do not collide in the SVG id namespace.
+distinct colours either side of each threshold, configurable limits, and grey
+when unavailable), the freshness line and its stale warning, live re-rendering
+on an existing card across many successive `hass` updates, graceful
+degradation (missing humidity entity, `unavailable` states, empty history),
+legacy config compatibility, and that two instances on one dashboard do not
+collide in the SVG id namespace.
+
+One test is a direct regression guard for the blended-ramp bug: it replays a
+real observed 24 h span (61.2–72.1 °F) and asserts the card does not render
+the whole range as one colour.
 
 ## License
 

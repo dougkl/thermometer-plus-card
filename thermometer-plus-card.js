@@ -12,8 +12,18 @@
  *
  * Plus banded colouring (color_mode "bands", the default): the column and the
  * bulb go snow-white below freezing, blue while cold, flat green through the
- * comfort band and gold/orange/red above it. Upstream painted the bulb red
+ * comfort band and amber/orange/red above it. Upstream painted the bulb red
  * permanently, which reads as "hot" even at freezing.
+ *
+ * Each band starts at its own distinct colour rather than easing into green at
+ * the comfort edges. Blending looked smoother but made a real 24 h span of
+ * 61-72 degF render as one shade of green, so the card never appeared to react
+ * to temperature at all.
+ *
+ * A freshness line reports how long ago the sensor last updated, and the card
+ * re-renders on a 30 s timer -- Home Assistant only pushes a new hass object
+ * when an entity changes, and a sensor reporting every ~20 min otherwise makes
+ * a healthy card look frozen.
  *
  * Lives in /config/www/ rather than /config/www/community/ so that a HACS
  * update of the upstream card cannot overwrite it.
@@ -38,7 +48,7 @@
   "use strict";
 
   var CARD = "thermometer-plus-card";
-  var VERSION = "1.1.0";
+  var VERSION = "1.2.0";
 
   /* ------------------------------------------------------------------ *
    * Helpers
@@ -76,25 +86,28 @@
     return rgb(lerpRgb(stops[i], stops[i + 1], x - i));
   }
 
-  /* Colour anchors for the banded ("bands") colour mode. */
+  /* Colour anchors for the banded ("bands") colour mode.
+   *
+   * The ramps deliberately do NOT blend into green at the comfort edges.
+   * Blending looked smooth but meant a 30-degree-wide cold zone rendered as
+   * green-teal for most of its range: a real 24 h span of 61-72 degF showed no
+   * visible colour change at all. Each band now starts at its own unmistakable
+   * colour, so crossing a threshold is obvious. */
   var BAND_GREEN = [67, 160, 71];
-  /* Below freezing: white snow warming into pale ice. */
+  /* Below freezing: pale ice at the threshold, pure snow at the bottom. */
   var BAND_SNOW = [
     [255, 255, 255],
     [235, 248, 255],
-    [186, 230, 253],
+    [214, 240, 253],
   ];
-  /* Freezing up to the comfort band: ice -> blue -> teal -> green. */
+  /* Cold: deep blue at freezing, light blue just under the comfort band. */
   var BAND_COLD = [
-    [186, 230, 253],
-    [41, 147, 239],
-    [26, 188, 156],
-    BAND_GREEN,
+    [21, 101, 192],
+    [33, 150, 243],
+    [129, 212, 250],
   ];
-  /* Above the comfort band: green -> lime -> gold -> orange -> red. */
+  /* Hot: amber just above the comfort band, through orange to red. */
   var BAND_HOT = [
-    BAND_GREEN,
-    [154, 205, 50],
     [255, 193, 7],
     [255, 112, 67],
     [211, 47, 47],
@@ -186,6 +199,21 @@
     return (Math.round(hours * 10) / 10) + " h";
   }
 
+  /** "just now" / "5 min ago" / "2 h 10 min ago" / "3 d ago". */
+  function ageLabel(seconds) {
+    if (seconds < 90) return "just now";
+    var mins = Math.round(seconds / 60);
+    if (mins < 60) return mins + " min ago";
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) {
+      var rem = mins % 60;
+      return rem ? hrs + " h " + rem + " min ago" : hrs + " h ago";
+    }
+    var days = Math.floor(hrs / 24);
+    var remH = hrs % 24;
+    return remH ? days + " d " + remH + " h ago" : days + " d ago";
+  }
+
   function statBucketTime(b) {
     // HA has returned `start` as epoch ms (current) and as an ISO string
     // (older cores). Accept both.
@@ -206,6 +234,7 @@
       this._series = null;
       this._lastFetch = 0;
       this._fetching = false;
+      this._timer = null;
     }
 
     static getConfigElement() {
@@ -252,6 +281,8 @@
         comfort_min: undefined,
         comfort_max: undefined,
         freeze_below: undefined,
+        show_age: true,
+        stale_after: 3600,
         debug_banner: false,
       };
 
@@ -304,6 +335,32 @@
       this._update();
     }
 
+    /* A setter without a getter makes `element.hass` read back as undefined,
+     * which breaks any caller that reads the property back (the config
+     * preview does). */
+    get hass() {
+      return this._hass;
+    }
+
+    /* Home Assistant only pushes a new hass object when some entity changes.
+     * This sensor reports roughly every 20 minutes, so without a ticker the
+     * age line would sit at "5 min ago" indefinitely and the card would look
+     * dead between reports. */
+    connectedCallback() {
+      if (this._timer) return;
+      var self = this;
+      this._timer = setInterval(function () {
+        if (self._hass && self._config) self._update();
+      }, 30000);
+    }
+
+    disconnectedCallback() {
+      if (this._timer) {
+        clearInterval(this._timer);
+        this._timer = null;
+      }
+    }
+
     getCardSize() {
       return 5;
     }
@@ -328,6 +385,8 @@
         ".humidity{display:flex;align-items:center;gap:4px;white-space:nowrap;",
         "opacity:.9;margin-top:4px;color:var(--info-color,#2196f3);}",
         ".humidity ha-icon{--mdc-icon-size:18px;width:18px;height:18px;}",
+        ".age{opacity:.55;white-space:nowrap;margin-top:4px;font-size:.72rem;}",
+        ".age.stale{opacity:.9;color:var(--warning-color,#ffa726);font-weight:600;}",
         ".table{width:100%;}",
         ".grp,.head,.row{display:grid;gap:6px;align-items:center;}",
         ".grp{opacity:.8;font-weight:600;padding-bottom:2px;}",
@@ -425,9 +484,13 @@
       var humText = document.createElement("span");
       humidity.appendChild(humIcon);
       humidity.appendChild(humText);
+      var age = document.createElement("div");
+      age.className = "age";
+      age.style.display = "none";
       readout.appendChild(value);
       readout.appendChild(secondary);
       readout.appendChild(humidity);
+      readout.appendChild(age);
       thermo.appendChild(readout);
 
       // --- table ---
@@ -468,6 +531,7 @@
       this._secondaryEl = secondary;
       this._humidityEl = humidity;
       this._humidityTextEl = humText;
+      this._ageEl = age;
       this._fillEl = fill;
       this._bulbEl = bulb;
       this._tubeEl = tube;
@@ -542,6 +606,17 @@
         : "";
     }
 
+    /** Epoch ms of the entity's last report, or 0 if unknown. */
+    _lastUpdated(entityId) {
+      if (!this._hass || !entityId) return 0;
+      var st = this._hass.states ? this._hass.states[entityId] : null;
+      if (!st) return 0;
+      var raw = st.last_updated || st.last_changed;
+      if (!raw) return 0;
+      var t = typeof raw === "number" ? raw : Date.parse(raw);
+      return isNaN(t) ? 0 : t;
+    }
+
     _fmt(value, precision) {
       var p = precision;
       if (p === undefined || p === null) p = this._config.precision;
@@ -587,6 +662,31 @@
         this._humidityEl.style.display = "";
       } else {
         this._humidityEl.style.display = "none";
+      }
+
+      // --- freshness ---
+      // An outdoor sensor that reports every ~20 min looks frozen, and a
+      // sensor that has died looks identical to one that is merely quiet.
+      // Showing the age of the reading distinguishes the two.
+      if (cfg.show_age === false) {
+        this._ageEl.style.display = "none";
+      } else {
+        var updated = this._lastUpdated(cfg.entity);
+        if (cfg.humidity_entity) {
+          var hu = this._lastUpdated(cfg.humidity_entity);
+          if (hu && (!updated || hu > updated)) updated = hu;
+        }
+        if (!updated) {
+          this._ageEl.style.display = "none";
+        } else {
+          var secs = Math.max(0, (Date.now() - updated) / 1000);
+          this._ageEl.textContent = ageLabel(secs);
+          var limit = Number(cfg.stale_after);
+          if (isNaN(limit)) limit = 3600;
+          if (limit > 0 && secs > limit) this._ageEl.classList.add("stale");
+          else this._ageEl.classList.remove("stale");
+          this._ageEl.style.display = "";
+        }
       }
 
       // --- thermometer fill ---
@@ -650,9 +750,10 @@
     }
 
     /**
-     * Banded colouring: flat green inside the comfort band, warming through
-     * lime/gold/orange to red above it, cooling through teal/blue to ice
-     * below it, and turning to snow white below the freezing threshold.
+     * Banded colouring: flat green inside the comfort band, amber -> orange ->
+     * red above it, light -> deep blue below it, and snow white below the
+     * freezing threshold. Each band starts at its own distinct colour so that
+     * crossing a threshold is visible at a glance.
      */
     _bandColor(value, lo, hi, comfortMin, comfortMax, freezeBelow) {
       if (comfortMax < comfortMin) {
@@ -957,6 +1058,11 @@
         {
           name: "freeze_below",
           selector: { number: { min: -100, max: 400, mode: "box" } },
+        },
+        { name: "show_age", selector: { boolean: {} } },
+        {
+          name: "stale_after",
+          selector: { number: { min: 0, max: 86400, mode: "box" } },
         },
         { name: "theme_colors", selector: { object: {} } },
         { name: "debug_banner", selector: { boolean: {} } },

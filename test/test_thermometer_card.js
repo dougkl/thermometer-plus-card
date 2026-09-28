@@ -51,17 +51,22 @@ const TEMP = "sensor.thermostat_sensor_patio_temperature";
 const HUM = "sensor.thermostat_sensor_patio_humidity";
 
 // Real values pulled from the live install.
-function makeHass(tempState = "73.94", humState = "40.4") {
+function makeHass(tempState = "73.94", humState = "40.4", agoSec = 0) {
+  const stamp = new Date(Date.now() - agoSec * 1000).toISOString();
   return {
     language: "en",
     states: {
       [TEMP]: {
         state: tempState,
         attributes: { unit_of_measurement: "\u00b0F" },
+        last_updated: stamp,
+        last_changed: stamp,
       },
       [HUM]: {
         state: humState,
         attributes: { unit_of_measurement: "%" },
+        last_updated: stamp,
+        last_changed: stamp,
       },
     },
     callWS: async () => {
@@ -321,10 +326,14 @@ console.log("\n=== 8. banded temperature colours ===");
   checkTrue("colder means whiter", snow0[0] > snow30[0],
     `${colorAt(30).fill} -> ${colorAt(0).fill}`);
 
-  // Freezing point is the boundary between the snow and cold ramps, so the
-  // two ramps must meet there rather than jumping.
-  check("freeze point (35F) joins both ramps", colorAt(35).fill,
-    "rgb(186,230,253)");
+  // Freezing is a distinct state, so the snow and cold bands are meant to be
+  // visibly different either side of the threshold rather than blended.
+  const atFreeze = parseRgb(colorAt(35).fill);
+  const belowFreeze = parseRgb(colorAt(34).fill);
+  checkTrue(`at freeze (35F) is deep blue (${colorAt(35).fill})`,
+    atFreeze[2] > 150 && atFreeze[0] < 80, colorAt(35).fill);
+  checkTrue(`just below freeze (34F) is snowy (${colorAt(34).fill})`,
+    belowFreeze[0] > 180, colorAt(34).fill);
 
   // Thresholds are configurable.
   check("custom comfort band applies",
@@ -336,6 +345,24 @@ console.log("\n=== 8. banded temperature colours ===");
   checkTrue("same 45F is blue, not snow, with the default freeze of 35",
     defaultAt45[2] > defaultAt45[0] && defaultAt45[0] < 180,
     defaultAt45.join(","));
+
+  // REGRESSION: the first cut blended the cold ramp into green at
+  // comfort_min, so a real 24 h span of 61.2-72.1 degF rendered green or
+  // green-teal throughout and the card never appeared to change colour.
+  const realRange = [61.2, 63, 64.9, 65.1, 68, 72.1];
+  const seen = realRange.map((t) => colorAt(t).fill);
+  console.log("        observed 24h range ->",
+    realRange.map((t, i) => `${t}:${seen[i]}`).join("  "));
+  const belowBand = realRange
+    .map((t, i) => ({ t, c: parseRgb(seen[i]) }))
+    .filter((x) => x.t < 65);
+  checkTrue("every reading just below the band is blue-dominant",
+    belowBand.every((x) => x.c[2] > x.c[0] && x.c[2] > x.c[1]),
+    belowBand.map((x) => `${x.t}=${x.c}`).join(" "));
+  checkTrue("cold and comfortable are clearly different colours",
+    seen[2] !== seen[3], `${seen[2]} vs ${seen[3]}`);
+  checkTrue("the real 24h range spans more than one colour",
+    new Set(seen).size >= 3, `only ${new Set(seen).size} distinct`);
 
   // Other colour modes still work.
   check("static mode honours theme_colors.fill",
@@ -351,6 +378,98 @@ console.log("\n=== 8. banded temperature colours ===");
     un._fillEl.getAttribute("fill"), "var(--disabled-text-color,#9e9e9e)");
   check("unavailable bulb is greyed",
     un._bulbEl.getAttribute("fill"), "var(--disabled-text-color,#9e9e9e)");
+}
+
+console.log("\n=== 9. live updates on an existing card ===");
+{
+  // Every earlier group built a fresh card, so none of them would notice a
+  // card that renders once and then ignores later hass updates.
+  const el = build(BASE, makeHass("71.8", "44"));
+  const read = () => ({
+    value: el.querySelector(".value").textContent,
+    secondary: el.querySelector(".secondary").textContent,
+    humidity: el.querySelector(".humidity span").textContent,
+    fill: el._fillEl.getAttribute("fill"),
+    bulb: el._bulbEl.getAttribute("fill"),
+    height: Number(el._fillEl.getAttribute("height")),
+  });
+
+  const first = read();
+  check("initial readout", first.value, "71.8 \u00b0F");
+  check("initial colour is comfort green", first.fill, "rgb(67,160,71)");
+
+  // Same element, new hass object -- exactly what HA does on a state change.
+  el.hass = makeHass("95.0", "20");
+  const hot = read();
+  check("readout follows the new state", hot.value, "95.0 \u00b0F");
+  check("secondary follows the new state", hot.secondary, "35.0 \u00b0C");
+  check("humidity follows the new state", hot.humidity, "20 %");
+  checkTrue(`colour left the comfort band (${hot.fill})`,
+    hot.fill !== first.fill, `still ${hot.fill}`);
+  check("bulb followed too", hot.bulb, hot.fill);
+  checkTrue(`bar grew (${first.height.toFixed(1)} -> ${hot.height.toFixed(1)})`,
+    hot.height > first.height, `${first.height} -> ${hot.height}`);
+
+  el.hass = makeHass("20.0", "90");
+  const snow = read();
+  check("readout follows a freezing state", snow.value, "20.0 \u00b0F");
+  checkTrue(`colour went snowy (${snow.fill})`,
+    snow.fill !== hot.fill && snow.fill !== first.fill, snow.fill);
+  checkTrue(`bar shrank (${hot.height.toFixed(1)} -> ${snow.height.toFixed(1)})`,
+    snow.height < hot.height, `${hot.height} -> ${snow.height}`);
+
+  // Going back to a previously seen value must still track.
+  el.hass = makeHass("71.8", "44");
+  check("returns to green when comfortable", read().fill, "rgb(67,160,71)");
+  check("readout returns too", read().value, "71.8 \u00b0F");
+
+  // A card must not silently stop updating after many ticks.
+  for (let i = 0; i < 25; i++) el.hass = makeHass(String(60 + i), "50");
+  check("still updating after 25 ticks", read().value, "84.0 \u00b0F");
+}
+
+console.log("\n=== 10. freshness indicator ===");
+{
+  const ageOf = (sec, extra) => {
+    const el = build(Object.assign({}, BASE, extra || {}),
+      makeHass("70.0", "50", sec));
+    const a = el.querySelector(".age");
+    return { text: a.textContent, shown: a.style.display !== "none",
+             stale: a.classList.contains("stale") };
+  };
+
+  check("fresh reading", ageOf(10).text, "just now");
+  check("minutes", ageOf(20 * 60).text, "20 min ago");
+  check("hours and minutes", ageOf(2 * 3600 + 10 * 60).text, "2 h 10 min ago");
+  check("whole hours", ageOf(3 * 3600).text, "3 h ago");
+  check("days", ageOf(49 * 3600).text, "2 d 1 h ago");
+
+  checkTrue("a recent reading is not flagged stale", !ageOf(10 * 60).stale,
+    "flagged stale");
+  checkTrue("an old reading is flagged stale", ageOf(4 * 3600).stale,
+    "not flagged");
+  checkTrue("stale_after is configurable",
+    ageOf(10 * 60, { stale_after: 60 }).stale, "not flagged with stale_after=60");
+  checkTrue("stale_after 0 disables the warning",
+    !ageOf(99 * 3600, { stale_after: 0 }).stale, "flagged with stale_after=0");
+
+  checkTrue("age line can be hidden", !ageOf(10, { show_age: false }).shown,
+    "still shown");
+
+  // The age must keep counting up between sensor reports, which is what makes
+  // the card visibly alive when the sensor only reports every ~20 minutes.
+  const el = build(BASE, makeHass("70.0", "50", 60));
+  const before = el.querySelector(".age").textContent;
+  el.hass = makeHass("70.0", "50", 45 * 60);
+  const after = el.querySelector(".age").textContent;
+  checkTrue(`age tracks the newest report (${before} -> ${after})`,
+    before !== after, `${before} == ${after}`);
+  checkTrue("card exposes a hass getter",
+    el.hass && el.hass.states !== undefined, "hass getter missing");
+  checkTrue("a ticker is installed while connected", !!el._timer,
+    "no timer");
+  el.remove();
+  checkTrue("ticker is cleared on disconnect", !el._timer, "timer leaked");
 }
 
 console.log(`\n==== ${pass}/${pass + fail} checks passed ====`);

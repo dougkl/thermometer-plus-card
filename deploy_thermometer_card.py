@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ha_ws import HAClient  # noqa: E402
 
-CARD_VERSION = "1.1.0"
+CARD_VERSION = "1.2.0"
 RESOURCE_URL = "/local/thermometer-plus-card.js?v=" + CARD_VERSION
 RESOURCE_STEM = "/local/thermometer-plus-card.js"
 
